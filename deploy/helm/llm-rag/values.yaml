@@ -1,0 +1,127 @@
+global:
+  namespace: llm
+  # Если деплоишь с самой ноды — registry виден как localhost:5000 изнутри пода? Нет.
+  # k3s containerd видит registry через host network, поэтому правильный адрес — IP ноды:
+  registry: 192.168.31.241:5000
+  imagePullPolicy: IfNotPresent
+  storageClass: local-path
+  hostCachePath: /var/lib/llm
+  nodeIP: 192.168.31.241
+
+# Включаемые сервисы (для постепенного раската)
+features:
+  embeddings: false        # services/embeddings/ отсутствует, включи когда соберёшь
+  notebook: false          # dev-инструмент, в проде обычно не нужен
+  langfuse: true
+  reranker: true
+  ui: true
+  ingress: true
+
+# Ollama не разворачивается в k8s — используется внешний (хост/compose).
+# Укажи URL'ы доступные из подов кластера. Для k3s на 192.168.31.241 это обычно сам хост:
+ollama:
+  url: "http://192.168.31.241:11434"       # GPU инстанс (LLM)
+  embedUrl: "http://192.168.31.241:11435"  # CPU инстанс (embeddings)
+
+postgres:
+  image: postgres:15-alpine
+  user: postgres
+  password: postgres
+  db: llm_platform
+  pvcSize: 20Gi
+
+qdrant:
+  image: qdrant/qdrant:latest
+  pvcSize: 30Gi
+
+clickhouse:
+  image: clickhouse/clickhouse-server:24.3
+  user: clickhouse
+  password: clickhouse
+  pvcSize: 30Gi
+
+redis:
+  image: redis:7-alpine
+  password: redis
+
+minio:
+  image: minio/minio:latest
+  rootUser: minio
+  rootPassword: miniosecret
+  pvcSize: 20Gi
+
+embeddings:
+  image: llm/embeddings:latest
+  port: 8080
+  models: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2,intfloat/multilingual-e5-base,intfloat/multilingual-e5-large,BAAI/bge-m3,deepvk/USER-bge-m3,sergeyzh/LaBSE-ru-turbo"
+
+reranker:
+  image: llm/reranker:latest
+  model: BAAI/bge-reranker-v2-m3
+  topK: 5
+
+ragApi:
+  image: llm/rag_api:latest
+  embedModel: bge-m3:latest
+  llmModel: bambucha/saiga-llama3:8b-q4_K
+  qdrantCollection: CEN2_all_pages
+  retrieveTopK: 10
+  rerankerTopK: 5
+
+ui:
+  image: llm/ui:latest
+  port: 8501
+
+notebook:
+  image: llm/notebook:latest
+  port: 8888
+
+langfuse:
+  workerImage: langfuse/langfuse-worker:3
+  webImage: langfuse/langfuse:3
+  salt: "mysalt"
+  encryptionKey: "0000000000000000000000000000000000000000000000000000000000000000"
+  nextauthSecret: "mysecret"
+  init:
+    orgId: "local"
+    projectId: "rag"
+    userEmail: "admin@local.dev"
+    userName: "admin"
+    userPassword: "admin12345"
+    orgName: "local"
+    projectName: "rag"
+
+# Раздельные индексеры запускаются как Job вручную:
+#   helm upgrade llm-rag . --reuse-values --set indexers.runText=true
+indexers:
+  textImage: llm/indexer_text:latest
+  imageImage: llm/indexer_image:latest
+  collection: docs_v1
+  recreate: "0"
+  llmFix: "0"
+  llmFixModel: "qwen3:8b"
+  llmFixTimeout: "300"
+  only: ""
+  runText: false
+  runImage: false
+  runPostfix: false
+
+# Секреты — переопределяются через values.secrets.yaml (см. values.secrets.example.yaml)
+secrets:
+  langfusePublicKey: ""
+  langfuseSecretKey: ""
+  hfToken: ""
+  clearmlAccessKey: ""
+  clearmlSecretKey: ""
+
+ingress:
+  className: traefik
+  hosts:
+    ui: ui.llm.local
+    api: api.llm.local
+    langfuse: langfuse.llm.local
+    notebook: nb.llm.local
+
+# Внешний доступ (LoadBalancer от k3s klipper-lb привяжет к node IP)
+externalAccess:
+  type: LoadBalancer   # или NodePort

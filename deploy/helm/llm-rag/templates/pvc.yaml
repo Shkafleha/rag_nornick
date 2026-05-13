@@ -1,0 +1,23 @@
+{{- $ns := .Values.global.namespace -}}
+{{- $sc := .Values.global.storageClass -}}
+{{- range $name, $size := dict
+    "postgres-data"      .Values.postgres.pvcSize
+    "qdrant-storage"     .Values.qdrant.pvcSize
+    "clickhouse-data"    .Values.clickhouse.pvcSize
+    "clickhouse-logs"    "5Gi"
+    "minio-data"         .Values.minio.pvcSize
+    "embeddings-cache"   "20Gi"
+}}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: {{ $sc }}
+  resources:
+    requests:
+      storage: {{ $size }}
+{{- end }}

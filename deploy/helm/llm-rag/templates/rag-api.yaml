@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-api
+  namespace: {{ .Values.global.namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: rag-api }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: rag-api }
+    spec:
+      containers:
+        - name: rag-api
+          image: {{ .Values.global.registry }}/{{ .Values.ragApi.image }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports: [{ name: http, containerPort: 8000 }]
+          env:
+            - { name: EMBED_MODEL,       value: "{{ .Values.ragApi.embedModel }}" }
+            - { name: LLM_MODEL,         value: "{{ .Values.ragApi.llmModel }}" }
+            - { name: QDRANT_COLLECTION, value: "{{ .Values.ragApi.qdrantCollection }}" }
+            - { name: QDRANT_URL,        value: "http://qdrant:6333" }
+            - { name: OLLAMA_URL,        value: "{{ .Values.ollama.url }}" }
+            - { name: OLLAMA_EMBED_URL,  value: "{{ .Values.ollama.embedUrl }}" }
+            - { name: RERANKER_URL,      value: "http://reranker:8080" }
+            - { name: RERANKER_TOP_K,    value: "{{ .Values.ragApi.rerankerTopK }}" }
+            - { name: RETRIEVE_TOP_K,    value: "{{ .Values.ragApi.retrieveTopK }}" }
+            - name: POSTGRES_URI
+              value: "postgresql://{{ .Values.postgres.user }}:$(POSTGRES_PASSWORD)@postgres:5432/{{ .Values.postgres.db }}"
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: llm-secrets, key: POSTGRES_PASSWORD } }
+            - { name: LANGFUSE_HOST, value: "http://langfuse-web:3000" }
+            - name: LANGFUSE_PUBLIC_KEY
+              valueFrom: { secretKeyRef: { name: llm-secrets, key: LANGFUSE_PUBLIC_KEY } }
+            - name: LANGFUSE_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: llm-secrets, key: LANGFUSE_SECRET_KEY } }
+          volumeMounts:
+            - { name: processed, mountPath: /data, readOnly: true }
+            - { name: hf-cache,  mountPath: /root/.cache/huggingface }
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 30
+      volumes:
+        - name: processed
+          hostPath:
+            path: {{ .Values.global.hostCachePath }}/data/processed
+            type: DirectoryOrCreate
+        - name: hf-cache
+          hostPath:
+            path: {{ .Values.global.hostCachePath }}/hf-cache
+            type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rag-api
+  namespace: {{ .Values.global.namespace }}
+spec:
+  selector: { app.kubernetes.io/name: rag-api }
+  ports: [{ name: http, port: 8000, targetPort: 8000 }]

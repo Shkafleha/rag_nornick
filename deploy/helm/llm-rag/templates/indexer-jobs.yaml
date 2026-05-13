@@ -1,0 +1,119 @@
+{{- /*
+Индексеры — разовые задачи. Запуск:
+  helm upgrade llm-rag . -f values.yaml -f values.secrets.yaml \
+    --set indexers.runText=true
+Или напрямую:
+  kubectl create job --from=cronjob/... — нет, проще: helm install с set'ом.
+После завершения kubectl delete job -n llm indexer-text  ─ перед повторным запуском.
+*/ -}}
+
+{{- if .Values.indexers.runText }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: indexer-text
+  namespace: {{ .Values.global.namespace }}
+spec:
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: indexer
+          image: {{ .Values.global.registry }}/{{ .Values.indexers.textImage }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          env:
+            - { name: RAW_DIR,           value: /data/00_raw }
+            - { name: QDRANT_URL,        value: "http://qdrant:6333" }
+            - { name: COLLECTION,        value: "{{ .Values.indexers.collection }}" }
+            - { name: OLLAMA_EMBED_URL,  value: "{{ .Values.ollama.embedUrl }}" }
+            - { name: OLLAMA_URL,        value: "{{ .Values.ollama.url }}" }
+            - { name: EMBED_MODEL,       value: "{{ .Values.ragApi.embedModel }}" }
+            - { name: LLM_FIX,           value: "{{ .Values.indexers.llmFix }}" }
+            - { name: LLM_FIX_MODEL,     value: "{{ .Values.indexers.llmFixModel }}" }
+            - { name: LLM_FIX_TIMEOUT,   value: "{{ .Values.indexers.llmFixTimeout }}" }
+            - { name: FIXED_OUT_DIR,     value: /data/02_normalized_text }
+            - { name: RECREATE,          value: "{{ .Values.indexers.recreate }}" }
+            - { name: ONLY,              value: "{{ default "" .Values.indexers.only }}" }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+      volumes:
+        - name: data
+          hostPath: { path: {{ .Values.global.hostCachePath }}/data, type: DirectoryOrCreate }
+{{- end }}
+---
+{{- if .Values.indexers.runImage }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: indexer-image
+  namespace: {{ .Values.global.namespace }}
+spec:
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: OnFailure
+      runtimeClassName: nvidia
+      containers:
+        - name: indexer
+          image: {{ .Values.global.registry }}/{{ .Values.indexers.imageImage }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          env:
+            - { name: RAW_DIR,           value: /data/00_raw }
+            - { name: OCR_OUT_DIR,       value: /data/01_extracted_pages }
+            - { name: QDRANT_URL,        value: "http://qdrant:6333" }
+            - { name: COLLECTION,        value: "{{ .Values.indexers.collection }}" }
+            - { name: OLLAMA_EMBED_URL,  value: "{{ .Values.ollama.embedUrl }}" }
+            - { name: OLLAMA_URL,        value: "{{ .Values.ollama.url }}" }
+            - { name: EMBED_MODEL,       value: "{{ .Values.ragApi.embedModel }}" }
+            - { name: RECREATE,          value: "{{ .Values.indexers.recreate }}" }
+            - { name: ONLY,              value: "{{ default "" .Values.indexers.only }}" }
+            - { name: LLM_FIX,           value: "{{ .Values.indexers.llmFix }}" }
+            - { name: LLM_FIX_MODEL,     value: "{{ .Values.indexers.llmFixModel }}" }
+            - { name: PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK, value: "True" }
+          resources:
+            limits: { nvidia.com/gpu: 1 }
+          volumeMounts:
+            - { name: data,    mountPath: /data }
+            - { name: hf,      mountPath: /root/.cache/huggingface }
+            - { name: paddlex, mountPath: /root/.paddlex }
+      volumes:
+        - name: data
+          hostPath: { path: {{ .Values.global.hostCachePath }}/data,    type: DirectoryOrCreate }
+        - name: hf
+          hostPath: { path: {{ .Values.global.hostCachePath }}/hf-cache, type: DirectoryOrCreate }
+        - name: paddlex
+          hostPath: { path: {{ .Values.global.hostCachePath }}/paddlex, type: DirectoryOrCreate }
+{{- end }}
+---
+{{- if .Values.indexers.runPostfix }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: postfix-llm
+  namespace: {{ .Values.global.namespace }}
+spec:
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: postfix
+          image: {{ .Values.global.registry }}/{{ .Values.indexers.textImage }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["python", "/app/image_pdf/postfix_llm.py"]
+          env:
+            - { name: OCR_OUT_DIR,       value: /data/01_extracted_pages }
+            - { name: QDRANT_URL,        value: "http://qdrant:6333" }
+            - { name: COLLECTION,        value: "{{ .Values.indexers.collection }}" }
+            - { name: OLLAMA_EMBED_URL,  value: "{{ .Values.ollama.embedUrl }}" }
+            - { name: OLLAMA_URL,        value: "{{ .Values.ollama.url }}" }
+            - { name: EMBED_MODEL,       value: "{{ .Values.ragApi.embedModel }}" }
+            - { name: LLM_FIX_MODEL,     value: "{{ .Values.indexers.llmFixModel }}" }
+            - { name: ONLY,              value: "{{ default "" .Values.indexers.only }}" }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+      volumes:
+        - name: data
+          hostPath: { path: {{ .Values.global.hostCachePath }}/data, type: DirectoryOrCreate }
+{{- end }}

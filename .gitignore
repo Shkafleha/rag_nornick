@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.so
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data — большие бинарные файлы (PDFs, изображения страниц)
+data/00_raw/*.pdf
+data/01_extracted_pages/
+
+# Большие бинарные архивы
+ollama-models.tar
+*.tar
+*.tar.gz
+*.zip
+
+# Trash
+.Trash-0/
+
+# IDE / OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Claude Code local settings
+.claude/settings.local.json

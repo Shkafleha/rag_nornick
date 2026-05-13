@@ -1,0 +1,41 @@
+# Jupyter / dev
+jupyter
+notebook
+ipykernel
+ipywidgets
+
+# Data
+pandas
+numpy
+scipy
+matplotlib
+seaborn
+scikit-learn
+pyarrow
+
+# PDF / HTTP
+pdfplumber
+pymupdf
+requests
+
+# OCR / layout (PaddlePaddle сам ставится в Dockerfile со спец-индекса)
+paddleocr>=3.0.0
+
+# HF / Embeddings
+transformers
+accelerate
+safetensors
+sentence-transformers
+
+# Vector DB
+qdrant-client
+
+# (опционально) оркестрация, если в ноутбуке будешь запускать граф
+langgraph
+python-dotenv
+tenacity
+loguru
+orjson
+
+# Experiment tracking
+clearml

@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+requests
+langgraph
+langchain-core
+langfuse>=2.50,<3
+llama-index-core>=0.12,<0.13
+llama-index-vector-stores-qdrant>=0.4,<0.5
+llama-index-embeddings-ollama>=0.5,<0.6
+llama-index-llms-ollama>=0.5,<0.6
+llama-index-retrievers-bm25>=0.5,<0.6

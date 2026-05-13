@@ -1,0 +1,7 @@
+# paddlepaddle-gpu ставится отдельно в Dockerfile (нужен спец-индекс)
+paddleocr>=3.0.0
+paddlex[ocr]>=3.0.0
+pdfplumber>=0.11
+pymupdf>=1.24
+pillow>=10
+requests

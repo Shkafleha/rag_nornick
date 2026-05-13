@@ -1,0 +1,47 @@
+{{- if .Values.features.embeddings }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: embeddings
+  namespace: {{ .Values.global.namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: embeddings }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: embeddings }
+    spec:
+      runtimeClassName: nvidia
+      containers:
+        - name: embeddings
+          image: {{ .Values.global.registry }}/{{ .Values.embeddings.image }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports: [{ name: http, containerPort: {{ .Values.embeddings.port }} }]
+          env:
+            - { name: MODELS, value: "{{ .Values.embeddings.models }}" }
+            - { name: HOST,   value: "0.0.0.0" }
+            - { name: PORT,   value: "{{ .Values.embeddings.port }}" }
+            - name: HF_TOKEN
+              valueFrom: { secretKeyRef: { name: llm-secrets, key: HF_TOKEN } }
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+              memory: 8Gi
+            requests:
+              memory: 4Gi
+          volumeMounts:
+            - { name: cache, mountPath: /root/.cache }
+      volumes:
+        - name: cache
+          persistentVolumeClaim: { claimName: embeddings-cache }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: embeddings
+  namespace: {{ .Values.global.namespace }}
+spec:
+  selector: { app.kubernetes.io/name: embeddings }
+  ports: [{ name: http, port: 8080, targetPort: {{ .Values.embeddings.port }} }]
+{{- end }}

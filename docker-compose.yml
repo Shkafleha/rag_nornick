@@ -1,0 +1,444 @@
+version: '3.8'
+
+services:
+
+  # ── PostgreSQL (shared: langsmith + text-to-sql данные) ────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: llm_postgres
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=llm_platform
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    networks:
+      - ollama_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Ollama GPU (LLM generation) ────────────────────────────────────────────
+  # Перенесена на удалённый хост 192.168.31.241:11434.
+  # Чтобы поднять локально — `docker compose --profile local-ollama up -d ollama ollama_cpu`
+  # и переопредели OLLAMA_URL / OLLAMA_EMBED_URL в .env.
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: ollama
+  #   profiles: [local-ollama]
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   environment:
+  #     OLLAMA_HOST: "0.0.0.0"
+  #     OLLAMA_MAX_LOADED_MODELS: "1"
+  #     OLLAMA_KEEP_ALIVE: "5m"
+  #     OLLAMA_CONTEXT_LENGTH: "4096"
+  #   restart: unless-stopped
+  #   networks:
+  #     - ollama_network
+  #   command: ["serve"]
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             capabilities: [gpu]
+
+  # ── Ollama CPU (embeddings) ─────────────────────────────────────────────────
+  # ollama_cpu:
+  #   image: ollama/ollama:latest
+  #   container_name: ollama_cpu
+  #   profiles: [local-ollama]
+  #   ports:
+  #     - "11435:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   environment:
+  #     OLLAMA_HOST: "0.0.0.0"
+  #     OLLAMA_MAX_LOADED_MODELS: "1"
+  #     OLLAMA_KEEP_ALIVE: "5m"
+  #     CUDA_VISIBLE_DEVICES: ""
+  #   restart: unless-stopped
+  #   networks:
+  #     - ollama_network
+  #   command: ["serve"]
+
+  # ── Embeddings (HuggingFace sentence-transformers) ─────────────────────────
+  embeddings:
+    container_name: embeddings_service
+    build:
+      context: .
+      dockerfile: services/embeddings/Dockerfile
+    ports:
+      - "8081:8080"
+    environment:
+      - MODELS=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2,intfloat/multilingual-e5-base,intfloat/multilingual-e5-large,BAAI/bge-m3,deepvk/USER-bge-m3,sergeyzh/LaBSE-ru-turbo
+      - PORT=8080
+      - HOST=0.0.0.0
+      - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+      - embeddings_cache:/root/.cache
+    restart: unless-stopped
+    networks:
+      - ollama_network
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+        reservations:
+          memory: 4G
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # ── Notebook (dev) ─────────────────────────────────────────────────────────
+  notebook-gpu:
+    container_name: llm_notebook_gpu
+    build:
+      context: .
+      dockerfile: services/notebook/Dockerfile
+    ports:
+      - "8889:8888"
+    environment:
+      - EMBEDDINGS_API_URL=http://embeddings_service:8080
+      - NVIDIA_VISIBLE_DEVICES=all
+      - POSTGRES_URI=postgresql://postgres:postgres@postgres:5432/llm_platform
+      - CLEARML_WEB_HOST=https://app.clear.ml
+      - CLEARML_API_HOST=https://api.clear.ml
+      - CLEARML_FILES_HOST=https://files.clear.ml
+      - CLEARML_API_ACCESS_KEY=${CLEARML_API_ACCESS_KEY:-}
+      - CLEARML_API_SECRET_KEY=${CLEARML_API_SECRET_KEY:-}
+    command: jupyter notebook --ip=0.0.0.0 --port=8888 --no-browser --allow-root --NotebookApp.token='' --NotebookApp.password=''
+    volumes:
+      - .:/workspace
+      - paddlex_cache:/root/.paddlex
+      - hf_cache:/root/.cache/huggingface
+    working_dir: /workspace
+    depends_on:
+      - embeddings
+    restart: unless-stopped
+    networks:
+      - ollama_network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # ── Qdrant ─────────────────────────────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    restart: unless-stopped
+    networks:
+      - ollama_network
+
+  # ── RAG API ────────────────────────────────────────────────────────────────
+  rag_api:
+    build: ./services/rag_api
+    container_name: rag_api
+    ports:
+      - "8000:8000"
+    environment:
+      - EMBED_MODEL=bge-m3:latest
+      - LLM_MODEL=bambucha/saiga-llama3:8b-q4_K
+      - QDRANT_COLLECTION=CEN2_all_pages
+      - POSTGRES_URI=postgresql://postgres:postgres@postgres:5432/llm_platform
+      - OLLAMA_URL=${OLLAMA_URL:-http://192.168.31.241:11434}
+      - OLLAMA_EMBED_URL=${OLLAMA_EMBED_URL:-http://192.168.31.241:11434}
+      - RERANKER_URL=http://reranker:8080
+      - RERANKER_TOP_K=5
+      - RETRIEVE_TOP_K=10
+      - LANGFUSE_HOST=http://langfuse_web:3000
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      reranker:
+        condition: service_started
+    volumes:
+      - ./data/processed:/data:ro
+      - hf_cache:/root/.cache/huggingface  
+    restart: unless-stopped
+    networks:
+      - ollama_network
+
+  # ── Indexer: text PDF ──────────────────────────────────────────────────────
+  indexer_text:
+    build:
+      context: ./services/indexer
+      dockerfile: text_pdf/Dockerfile
+    container_name: indexer_text
+    profiles: [indexing]
+    environment:
+      - RAW_DIR=/data/00_raw
+      - QDRANT_URL=http://qdrant:6333
+      - COLLECTION=docs_v1
+      - OLLAMA_EMBED_URL=${OLLAMA_EMBED_URL:-http://192.168.31.241:11434}
+      - EMBED_MODEL=bge-m3:latest
+      - OLLAMA_URL=${OLLAMA_URL:-http://192.168.31.241:11434}
+      - LLM_FIX=${LLM_FIX:-0}
+      - LLM_FIX_MODEL=${LLM_FIX_MODEL:-qwen3:8b}
+      - LLM_FIX_TIMEOUT=${LLM_FIX_TIMEOUT:-300}
+      - FIXED_OUT_DIR=/data/02_normalized_text
+      - RECREATE=${RECREATE:-0}
+      - ONLY=${ONLY:-}
+    volumes:
+      - ./data:/data
+    depends_on:
+      - qdrant
+    networks:
+      - ollama_network
+
+  # ── Postfix: LLM-коррекция OCR текстов (без GPU/PaddleX) ────────────────
+  postfix_llm:
+    build:
+      context: ./services/indexer
+      dockerfile: text_pdf/Dockerfile
+    container_name: postfix_llm
+    profiles: [indexing]
+    environment:
+      - OCR_OUT_DIR=/data/01_extracted_pages
+      - QDRANT_URL=http://qdrant:6333
+      - COLLECTION=docs_v1
+      - OLLAMA_EMBED_URL=${OLLAMA_EMBED_URL:-http://192.168.31.241:11434}
+      - EMBED_MODEL=bge-m3:latest
+      - OLLAMA_URL=${OLLAMA_URL:-http://192.168.31.241:11434}
+      - LLM_FIX_MODEL=${LLM_FIX_MODEL:-qwen3:8b}
+      - ONLY=${ONLY:-}
+    volumes:
+      - ./data:/data
+      - ./services/indexer/image_pdf:/app/image_pdf:ro
+    depends_on:
+      - qdrant
+    networks:
+      - ollama_network
+    command: ["python", "/app/image_pdf/postfix_llm.py"]
+
+  # ── Indexer: image PDF (OCR) ───────────────────────────────────────────────
+  indexer_image:
+    build:
+      context: ./services/indexer
+      dockerfile: image_pdf/Dockerfile
+    container_name: indexer_image
+    profiles: [indexing]
+    environment:
+      - RAW_DIR=/data/00_raw
+      - OCR_OUT_DIR=/data/01_extracted_pages
+      - QDRANT_URL=http://qdrant:6333
+      - COLLECTION=docs_v1
+      - OLLAMA_EMBED_URL=${OLLAMA_EMBED_URL:-http://192.168.31.241:11434}
+      - EMBED_MODEL=bge-m3:latest
+      - RECREATE=${RECREATE:-0}
+      - ONLY=${ONLY:-}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
+      - OLLAMA_URL=${OLLAMA_URL:-http://192.168.31.241:11434}
+      - LLM_FIX=${LLM_FIX:-0}
+      - LLM_FIX_MODEL=${LLM_FIX_MODEL:-qwen3:8b}
+    volumes:
+      - ./data:/data
+      - hf_cache:/root/.cache/huggingface
+      - paddlex_cache:/root/.paddlex
+    depends_on:
+      - qdrant
+    networks:
+      - ollama_network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ── Reranker (cross-encoder) ───────────────────────────────────────────────
+  reranker:
+    build: ./services/reranker
+    container_name: reranker
+    ports:
+      - "8082:8080"
+    environment:
+      - MODEL=BAAI/bge-reranker-v2-m3
+      - TOP_K=5
+      - HF_HUB_DISABLE_XET=1
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - hf_cache:/root/.cache/huggingface
+    restart: unless-stopped
+    networks:
+      - ollama_network
+
+  # ── Langfuse: Clickhouse ───────────────────────────────────────────────────
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    container_name: langfuse_clickhouse
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    restart: unless-stopped
+    networks:
+      - ollama_network
+
+  # ── Langfuse: Redis ────────────────────────────────────────────────────────
+  langfuse_redis:
+    image: redis:7-alpine
+    container_name: langfuse_redis
+    command: redis-server --requirepass redis
+    restart: unless-stopped
+    networks:
+      - ollama_network
+
+  # ── Langfuse: MinIO (S3) ───────────────────────────────────────────────────
+  langfuse_minio:
+    image: minio/minio:latest
+    container_name: langfuse_minio
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && minio server /data --console-address ":9001"'
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: miniosecret
+    ports:
+      - "9090:9000"
+      - "9091:9001"
+    volumes:
+      - langfuse_minio_data:/data
+    restart: unless-stopped
+    networks:
+      ollama_network:
+        aliases:
+          - minio
+
+  # ── Langfuse: Worker ───────────────────────────────────────────────────────
+  langfuse_worker:
+    image: langfuse/langfuse-worker:3
+    container_name: langfuse_worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_started
+      langfuse_redis:
+        condition: service_started
+      langfuse_minio:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/langfuse
+      SALT: "mysalt"
+      ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+      REDIS_HOST: langfuse_redis
+      REDIS_PORT: 6379
+      REDIS_AUTH: redis
+    restart: unless-stopped
+    networks:
+      - ollama_network
+
+  # ── Langfuse: Web (UI + API) ───────────────────────────────────────────────
+  langfuse_web:
+    image: langfuse/langfuse:3
+    container_name: langfuse_web
+    depends_on:
+      langfuse_worker:
+        condition: service_started
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/langfuse
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: "mysecret"
+      SALT: "mysalt"
+      ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+      REDIS_HOST: langfuse_redis
+      REDIS_PORT: 6379
+      REDIS_AUTH: redis
+      LANGFUSE_INIT_ORG_ID: "local"
+      LANGFUSE_INIT_PROJECT_ID: "rag"
+      LANGFUSE_INIT_USER_EMAIL: "admin@local.dev"
+      LANGFUSE_INIT_USER_NAME: "admin"
+      LANGFUSE_INIT_USER_PASSWORD: "admin12345"
+      LANGFUSE_INIT_ORG_NAME: "local"
+      LANGFUSE_INIT_PROJECT_NAME: "rag"
+    restart: unless-stopped
+    networks:
+      - ollama_network
+
+  # ── UI ─────────────────────────────────────────────────────────────────────
+  ui:
+    build: ./services/ui
+    container_name: llm_ui
+    ports:
+      - "8501:8501"
+    environment:
+      - RAG_API_URL=http://rag_api:8000
+    depends_on:
+      - rag_api
+    restart: unless-stopped
+    networks:
+      - ollama_network
+
+
+networks:
+  ollama_network:
+    driver: bridge
+
+volumes:
+  ollama_data:
+  embeddings_cache:
+  qdrant_storage:
+  postgres_data:
+  clickhouse_data:
+  clickhouse_logs:
+  langfuse_minio_data:
+  hf_cache:
+  paddlex_cache:

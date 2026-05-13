@@ -1,0 +1,46 @@
+{{- if .Values.features.reranker }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reranker
+  namespace: {{ .Values.global.namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: reranker }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: reranker }
+    spec:
+      runtimeClassName: nvidia
+      containers:
+        - name: reranker
+          image: {{ .Values.global.registry }}/{{ .Values.reranker.image }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports: [{ name: http, containerPort: 8080 }]
+          env:
+            - { name: MODEL,                value: "{{ .Values.reranker.model }}" }
+            - { name: TOP_K,                value: "{{ .Values.reranker.topK }}" }
+            - { name: HF_HUB_DISABLE_XET,   value: "1" }
+            - { name: PYTHONUNBUFFERED,     value: "1" }
+            - name: HF_TOKEN
+              valueFrom: { secretKeyRef: { name: llm-secrets, key: HF_TOKEN } }
+          resources:
+            limits: { nvidia.com/gpu: 1 }
+          volumeMounts:
+            - { name: hf-cache, mountPath: /root/.cache/huggingface }
+      volumes:
+        - name: hf-cache
+          hostPath:
+            path: {{ .Values.global.hostCachePath }}/hf-cache
+            type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reranker
+  namespace: {{ .Values.global.namespace }}
+spec:
+  selector: { app.kubernetes.io/name: reranker }
+  ports: [{ name: http, port: 8080, targetPort: 8080 }]
+{{- end }}

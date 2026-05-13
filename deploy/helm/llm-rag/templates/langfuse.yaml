@@ -1,0 +1,100 @@
+{{- if .Values.features.langfuse }}
+{{- $env := list
+  (dict "name" "DATABASE_URL" "value" (printf "postgresql://%s:$(POSTGRES_PASSWORD)@postgres:5432/langfuse" .Values.postgres.user))
+  (dict "name" "SALT" "value" .Values.langfuse.salt)
+  (dict "name" "ENCRYPTION_KEY" "value" .Values.langfuse.encryptionKey)
+  (dict "name" "CLICKHOUSE_MIGRATION_URL" "value" "clickhouse://clickhouse:9000")
+  (dict "name" "CLICKHOUSE_URL" "value" "http://clickhouse:8123")
+  (dict "name" "CLICKHOUSE_USER" "value" .Values.clickhouse.user)
+  (dict "name" "CLICKHOUSE_CLUSTER_ENABLED" "value" "false")
+  (dict "name" "LANGFUSE_S3_EVENT_UPLOAD_BUCKET" "value" "langfuse")
+  (dict "name" "LANGFUSE_S3_EVENT_UPLOAD_REGION" "value" "auto")
+  (dict "name" "LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID" "value" .Values.minio.rootUser)
+  (dict "name" "LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT" "value" "http://minio:9000")
+  (dict "name" "LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE" "value" "true")
+  (dict "name" "LANGFUSE_S3_EVENT_UPLOAD_PREFIX" "value" "events/")
+  (dict "name" "REDIS_HOST" "value" "langfuse-redis")
+  (dict "name" "REDIS_PORT" "value" "6379")
+}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: langfuse-worker
+  namespace: {{ .Values.global.namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: langfuse-worker }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: langfuse-worker }
+    spec:
+      containers:
+        - name: worker
+          image: {{ .Values.langfuse.workerImage }}
+          env:
+            {{- range $env }}
+            - { name: {{ .name }}, value: {{ .value | quote }} }
+            {{- end }}
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: llm-secrets, key: POSTGRES_PASSWORD } }
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom: { secretKeyRef: { name: llm-secrets, key: CLICKHOUSE_PASSWORD } }
+            - name: LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: llm-secrets, key: MINIO_ROOT_PASSWORD } }
+            - name: REDIS_AUTH
+              valueFrom: { secretKeyRef: { name: llm-secrets, key: REDIS_PASSWORD } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: langfuse-web
+  namespace: {{ .Values.global.namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: langfuse-web }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: langfuse-web }
+    spec:
+      containers:
+        - name: web
+          image: {{ .Values.langfuse.webImage }}
+          ports: [{ name: http, containerPort: 3000 }]
+          env:
+            {{- range $env }}
+            - { name: {{ .name }}, value: {{ .value | quote }} }
+            {{- end }}
+            - { name: NEXTAUTH_URL,    value: "http://{{ .Values.ingress.hosts.langfuse }}" }
+            - { name: NEXTAUTH_SECRET, value: "{{ .Values.langfuse.nextauthSecret }}" }
+            - { name: LANGFUSE_INIT_ORG_ID,        value: "{{ .Values.langfuse.init.orgId }}" }
+            - { name: LANGFUSE_INIT_PROJECT_ID,    value: "{{ .Values.langfuse.init.projectId }}" }
+            - { name: LANGFUSE_INIT_USER_EMAIL,    value: "{{ .Values.langfuse.init.userEmail }}" }
+            - { name: LANGFUSE_INIT_USER_NAME,     value: "{{ .Values.langfuse.init.userName }}" }
+            - { name: LANGFUSE_INIT_USER_PASSWORD, value: "{{ .Values.langfuse.init.userPassword }}" }
+            - { name: LANGFUSE_INIT_ORG_NAME,      value: "{{ .Values.langfuse.init.orgName }}" }
+            - { name: LANGFUSE_INIT_PROJECT_NAME,  value: "{{ .Values.langfuse.init.projectName }}" }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: llm-secrets, key: POSTGRES_PASSWORD } }
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom: { secretKeyRef: { name: llm-secrets, key: CLICKHOUSE_PASSWORD } }
+            - name: LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: llm-secrets, key: MINIO_ROOT_PASSWORD } }
+            - name: REDIS_AUTH
+              valueFrom: { secretKeyRef: { name: llm-secrets, key: REDIS_PASSWORD } }
+          readinessProbe:
+            httpGet: { path: /api/public/health, port: 3000 }
+            initialDelaySeconds: 30
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: langfuse-web
+  namespace: {{ .Values.global.namespace }}
+spec:
+  selector: { app.kubernetes.io/name: langfuse-web }
+  ports: [{ name: http, port: 3000, targetPort: 3000 }]
+{{- end }}

@@ -1,0 +1,5 @@
+.git/
+.idea/
+*.tmproj
+.DS_Store
+values.secrets.yaml
