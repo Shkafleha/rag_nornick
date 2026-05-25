@@ -38,9 +38,31 @@ def _render_chunk(c):
     st.caption(c["text"])
     st.divider()
 
+def _render_assistant_extras(msg):
+    citations_pre = msg.get("citations_pre_rerank") or []
+    citations = msg.get("citations") or []
+    timings = msg.get("timings") or {}
+    if citations_pre:
+        with st.expander(f"🔎 До реранка ({len(citations_pre)})", expanded=False):
+            for c in citations_pre:
+                _render_chunk(c)
+    if citations:
+        with st.expander(f"📄 После реранка ({len(citations)})", expanded=False):
+            for c in citations:
+                _render_chunk(c)
+    if timings:
+        parts = [f"**{k}**: {timings[k]/1000:.1f}с"
+                 for k in ["embed_query", "retrieve", "rerank", "build_context", "generate", "total"]
+                 if k in timings]
+        if parts:
+            st.caption(" · ".join(parts))
+
+
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
+        if msg["role"] == "assistant":
+            _render_assistant_extras(msg)
 
 EXAMPLES = ["Расскажи как работает карбонатный передел"]
 cols = st.columns(len(EXAMPLES))
@@ -63,6 +85,7 @@ if prompt:
     with st.chat_message("assistant"):
         # Этап 1: поиск чанков
         citations = []
+        citations_pre_rerank = []
         search_timings = {}
         with st.spinner("🔍 Ищу релевантные фрагменты…"):
             try:
@@ -74,14 +97,19 @@ if prompt:
                 r.raise_for_status()
                 sd = r.json()
                 citations = sd.get("citations", [])
+                citations_pre_rerank = sd.get("citations_pre_rerank", [])
                 search_timings = sd.get("timings", {})
-                logger.info(f"✓ /search: {len(citations)} чанков")
+                logger.info(f"✓ /search: pre={len(citations_pre_rerank)} → post={len(citations)}")
             except Exception as e:
                 logger.error(f"❌ /search: {type(e).__name__}: {e}")
                 st.error(f"Ошибка поиска: {str(e)[:200]}")
 
+        if citations_pre_rerank:
+            with st.expander(f"🔎 До реранка ({len(citations_pre_rerank)})", expanded=False):
+                for c in citations_pre_rerank:
+                    _render_chunk(c)
         if citations:
-            with st.expander(f"📄 Найдено чанков: {len(citations)}", expanded=False):
+            with st.expander(f"📄 После реранка ({len(citations)})", expanded=False):
                 for c in citations:
                     _render_chunk(c)
 
@@ -121,6 +149,7 @@ if prompt:
         "role": "assistant",
         "content": answer,
         "citations": citations,
+        "citations_pre_rerank": citations_pre_rerank,
         "timings": timings,
         "trace_id": trace_id,
     })
