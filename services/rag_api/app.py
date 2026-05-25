@@ -158,10 +158,12 @@ def retrieve(state: State) -> State:
 
 def _hit_to_citation(h: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not isinstance(h, dict):
+        logger.debug(f"_hit_to_citation: not a dict: {type(h)}")
         return None
     payload = h.get("payload") or {}
     t = (payload.get("text") or "").strip()
     if not t:
+        logger.debug(f"_hit_to_citation: no text in payload. Keys: {list(payload.keys())}")
         return None
     return {
         "text": t,
@@ -246,13 +248,16 @@ def build_context(state: State) -> State:
     logger.info(f"build_context: processing {len(state.get('hits', []))} hits")
     citations: List[Dict[str, Any]] = []
     texts: List[str] = []
-    for h in state.get("hits", []):
+    for i, h in enumerate(state.get("hits", [])):
         c = _hit_to_citation(h)
         if c:
             citations.append(c)
             texts.append(c["text"])
+            logger.debug(f"  Hit {i}: OK - {len(c['text'])} chars")
+        else:
+            logger.warning(f"  Hit {i}: SKIPPED - no valid text. Keys in hit: {list(h.keys())}")
 
-    logger.info(f"build_context: created {len(citations)} citations, {len(texts)} texts")
+    logger.info(f"build_context: created {len(citations)} citations from {len(state.get('hits', []))} hits")
     state["context"] = "\n\n---\n\n".join(texts)
     state["citations"] = citations
     logger.info(f"build_context: context size {len(state['context'])} chars")
