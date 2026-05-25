@@ -21,6 +21,27 @@ services:
       timeout: 5s
       retries: 5
 
+  # ── Ollama (LLM + Embeddings) ──────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama_local
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+    restart: unless-stopped
+    networks:
+      - ollama_network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
   # ── Qdrant ─────────────────────────────────────────────────────────────────
   qdrant:
     image: qdrant/qdrant:latest
@@ -45,8 +66,8 @@ services:
       - LLM_MODEL=qwen3:8b
       - QDRANT_COLLECTION=CEN1_ТИ_3-48200234-05.1-12-2020_Очистка_электролита_от_примесей
       - POSTGRES_URI=postgresql://postgres:postgres@postgres:5432/llm_platform
-      - OLLAMA_URL=http://host.docker.internal:11434
-      - OLLAMA_EMBED_URL=http://host.docker.internal:11434
+      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_EMBED_URL=http://ollama:11434
       - RERANKER_URL=${RERANKER_URL:-http://reranker:8080}
       - RERANKER_TOP_K=5
       - RETRIEVE_TOP_K=10
@@ -59,6 +80,8 @@ services:
       qdrant:
         condition: service_started
       reranker:
+        condition: service_started
+      ollama:
         condition: service_started
     volumes:
       - ./data/processed:/data:ro
@@ -236,3 +259,4 @@ volumes:
   clickhouse_logs:
   langfuse_minio_data:
   hf_cache:
+  ollama_data:
