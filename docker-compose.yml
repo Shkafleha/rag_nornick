@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
 
   # ── PostgreSQL (shared: langsmith + text-to-sql данные) ────────────────────
@@ -23,118 +21,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── Ollama GPU (LLM generation) ────────────────────────────────────────────
-  # Перенесена на удалённый хост 192.168.31.241:11434.
-  # Чтобы поднять локально — `docker compose --profile local-ollama up -d ollama ollama_cpu`
-  # и переопредели OLLAMA_URL / OLLAMA_EMBED_URL в .env.
-  # ollama:
-  #   image: ollama/ollama:latest
-  #   container_name: ollama
-  #   profiles: [local-ollama]
-  #   ports:
-  #     - "11434:11434"
-  #   volumes:
-  #     - ollama_data:/root/.ollama
-  #   environment:
-  #     OLLAMA_HOST: "0.0.0.0"
-  #     OLLAMA_MAX_LOADED_MODELS: "1"
-  #     OLLAMA_KEEP_ALIVE: "5m"
-  #     OLLAMA_CONTEXT_LENGTH: "4096"
-  #   restart: unless-stopped
-  #   networks:
-  #     - ollama_network
-  #   command: ["serve"]
-  #   deploy:
-  #     resources:
-  #       reservations:
-  #         devices:
-  #           - driver: nvidia
-  #             capabilities: [gpu]
-
-  # ── Ollama CPU (embeddings) ─────────────────────────────────────────────────
-  # ollama_cpu:
-  #   image: ollama/ollama:latest
-  #   container_name: ollama_cpu
-  #   profiles: [local-ollama]
-  #   ports:
-  #     - "11435:11434"
-  #   volumes:
-  #     - ollama_data:/root/.ollama
-  #   environment:
-  #     OLLAMA_HOST: "0.0.0.0"
-  #     OLLAMA_MAX_LOADED_MODELS: "1"
-  #     OLLAMA_KEEP_ALIVE: "5m"
-  #     CUDA_VISIBLE_DEVICES: ""
-  #   restart: unless-stopped
-  #   networks:
-  #     - ollama_network
-  #   command: ["serve"]
-
-  # ── Embeddings (HuggingFace sentence-transformers) ─────────────────────────
-  embeddings:
-    container_name: embeddings_service
-    build:
-      context: .
-      dockerfile: services/embeddings/Dockerfile
-    ports:
-      - "8081:8080"
-    environment:
-      - MODELS=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2,intfloat/multilingual-e5-base,intfloat/multilingual-e5-large,BAAI/bge-m3,deepvk/USER-bge-m3,sergeyzh/LaBSE-ru-turbo
-      - PORT=8080
-      - HOST=0.0.0.0
-      - NVIDIA_VISIBLE_DEVICES=all
-    volumes:
-      - embeddings_cache:/root/.cache
-    restart: unless-stopped
-    networks:
-      - ollama_network
-    deploy:
-      resources:
-        limits:
-          memory: 8G
-        reservations:
-          memory: 4G
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-
-  # ── Notebook (dev) ─────────────────────────────────────────────────────────
-  notebook-gpu:
-    container_name: llm_notebook_gpu
-    build:
-      context: .
-      dockerfile: services/notebook/Dockerfile
-    ports:
-      - "8889:8888"
-    environment:
-      - EMBEDDINGS_API_URL=http://embeddings_service:8080
-      - NVIDIA_VISIBLE_DEVICES=all
-      - POSTGRES_URI=postgresql://postgres:postgres@postgres:5432/llm_platform
-      - CLEARML_WEB_HOST=https://app.clear.ml
-      - CLEARML_API_HOST=https://api.clear.ml
-      - CLEARML_FILES_HOST=https://files.clear.ml
-      - CLEARML_API_ACCESS_KEY=${CLEARML_API_ACCESS_KEY:-}
-      - CLEARML_API_SECRET_KEY=${CLEARML_API_SECRET_KEY:-}
-    command: jupyter notebook --ip=0.0.0.0 --port=8888 --no-browser --allow-root --NotebookApp.token='' --NotebookApp.password=''
-    volumes:
-      - .:/workspace
-      - paddlex_cache:/root/.paddlex
-      - hf_cache:/root/.cache/huggingface
-    working_dir: /workspace
-    depends_on:
-      - embeddings
-    restart: unless-stopped
-    networks:
-      - ollama_network
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-
   # ── Qdrant ─────────────────────────────────────────────────────────────────
   qdrant:
     image: qdrant/qdrant:latest
@@ -156,12 +42,12 @@ services:
       - "8000:8000"
     environment:
       - EMBED_MODEL=bge-m3:latest
-      - LLM_MODEL=bambucha/saiga-llama3:8b-q4_K
-      - QDRANT_COLLECTION=CEN2_all_pages
+      - LLM_MODEL=qwen3:8b
+      - QDRANT_COLLECTION=CEN1_ТИ_3-48200234-05.1-12-2020_Очистка_электролита_от_примесей
       - POSTGRES_URI=postgresql://postgres:postgres@postgres:5432/llm_platform
-      - OLLAMA_URL=${OLLAMA_URL:-http://192.168.31.241:11434}
-      - OLLAMA_EMBED_URL=${OLLAMA_EMBED_URL:-http://192.168.31.241:11434}
-      - RERANKER_URL=http://reranker:8080
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - OLLAMA_EMBED_URL=http://host.docker.internal:11434
+      - RERANKER_URL=${RERANKER_URL:-http://reranker:8080}
       - RERANKER_TOP_K=5
       - RETRIEVE_TOP_K=10
       - LANGFUSE_HOST=http://langfuse_web:3000
@@ -181,97 +67,8 @@ services:
     networks:
       - ollama_network
 
-  # ── Indexer: text PDF ──────────────────────────────────────────────────────
-  indexer_text:
-    build:
-      context: ./services/indexer
-      dockerfile: text_pdf/Dockerfile
-    container_name: indexer_text
-    profiles: [indexing]
-    environment:
-      - RAW_DIR=/data/00_raw
-      - QDRANT_URL=http://qdrant:6333
-      - COLLECTION=docs_v1
-      - OLLAMA_EMBED_URL=${OLLAMA_EMBED_URL:-http://192.168.31.241:11434}
-      - EMBED_MODEL=bge-m3:latest
-      - OLLAMA_URL=${OLLAMA_URL:-http://192.168.31.241:11434}
-      - LLM_FIX=${LLM_FIX:-0}
-      - LLM_FIX_MODEL=${LLM_FIX_MODEL:-qwen3:8b}
-      - LLM_FIX_TIMEOUT=${LLM_FIX_TIMEOUT:-300}
-      - FIXED_OUT_DIR=/data/02_normalized_text
-      - RECREATE=${RECREATE:-0}
-      - ONLY=${ONLY:-}
-    volumes:
-      - ./data:/data
-    depends_on:
-      - qdrant
-    networks:
-      - ollama_network
-
-  # ── Postfix: LLM-коррекция OCR текстов (без GPU/PaddleX) ────────────────
-  postfix_llm:
-    build:
-      context: ./services/indexer
-      dockerfile: text_pdf/Dockerfile
-    container_name: postfix_llm
-    profiles: [indexing]
-    environment:
-      - OCR_OUT_DIR=/data/01_extracted_pages
-      - QDRANT_URL=http://qdrant:6333
-      - COLLECTION=docs_v1
-      - OLLAMA_EMBED_URL=${OLLAMA_EMBED_URL:-http://192.168.31.241:11434}
-      - EMBED_MODEL=bge-m3:latest
-      - OLLAMA_URL=${OLLAMA_URL:-http://192.168.31.241:11434}
-      - LLM_FIX_MODEL=${LLM_FIX_MODEL:-qwen3:8b}
-      - ONLY=${ONLY:-}
-    volumes:
-      - ./data:/data
-      - ./services/indexer/image_pdf:/app/image_pdf:ro
-    depends_on:
-      - qdrant
-    networks:
-      - ollama_network
-    command: ["python", "/app/image_pdf/postfix_llm.py"]
-
-  # ── Indexer: image PDF (OCR) ───────────────────────────────────────────────
-  indexer_image:
-    build:
-      context: ./services/indexer
-      dockerfile: image_pdf/Dockerfile
-    container_name: indexer_image
-    profiles: [indexing]
-    environment:
-      - RAW_DIR=/data/00_raw
-      - OCR_OUT_DIR=/data/01_extracted_pages
-      - QDRANT_URL=http://qdrant:6333
-      - COLLECTION=docs_v1
-      - OLLAMA_EMBED_URL=${OLLAMA_EMBED_URL:-http://192.168.31.241:11434}
-      - EMBED_MODEL=bge-m3:latest
-      - RECREATE=${RECREATE:-0}
-      - ONLY=${ONLY:-}
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      - PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
-      - OLLAMA_URL=${OLLAMA_URL:-http://192.168.31.241:11434}
-      - LLM_FIX=${LLM_FIX:-0}
-      - LLM_FIX_MODEL=${LLM_FIX_MODEL:-qwen3:8b}
-    volumes:
-      - ./data:/data
-      - hf_cache:/root/.cache/huggingface
-      - paddlex_cache:/root/.paddlex
-    depends_on:
-      - qdrant
-    networks:
-      - ollama_network
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-
   # ── Reranker (cross-encoder) ───────────────────────────────────────────────
+  # Запускается локально — Ollama не поддерживает cross-encoder reranker модели.
   reranker:
     build: ./services/reranker
     container_name: reranker
@@ -433,12 +230,9 @@ networks:
     driver: bridge
 
 volumes:
-  ollama_data:
-  embeddings_cache:
   qdrant_storage:
   postgres_data:
   clickhouse_data:
   clickhouse_logs:
   langfuse_minio_data:
   hf_cache:
-  paddlex_cache:

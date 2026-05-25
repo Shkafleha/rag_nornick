@@ -1,6 +1,7 @@
 import json
 import os
 import time
+import logging
 from functools import wraps
 from typing import Any, Dict, List, Optional, TypedDict
 
@@ -12,7 +13,10 @@ from pydantic import BaseModel
 from langfuse import Langfuse
 from langfuse.decorators import observe, langfuse_context
 
-langfuse_client = Langfuse()
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
+# langfuse_client = Langfuse()  # Disabled for now
 
 api = FastAPI()
 
@@ -72,7 +76,7 @@ def timed(name: str):
 
 
 @timed("embed_query")
-@observe(name="embed_query", capture_input=False, capture_output=False)
+# @observe  # Disabled(name="embed_query", capture_input=False, capture_output=False)
 def embed_query(state: State) -> State:
     try:
         langfuse_context.update_current_observation(input={"query": state.get("query", "")})
@@ -97,7 +101,7 @@ def embed_query(state: State) -> State:
 
 
 @timed("retrieve")
-@observe(name="retrieve", capture_input=False, capture_output=False)
+# @observe  # Disabled(name="retrieve", capture_input=False, capture_output=False)
 def retrieve(state: State) -> State:
     collections = state.get("collections") or [QDRANT_COLLECTION]
     all_hits = []
@@ -164,7 +168,7 @@ def _hit_to_citation(h: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 @timed("rerank")
-@observe(name="rerank", capture_input=False, capture_output=False)
+# @observe  # Disabled(name="rerank", capture_input=False, capture_output=False)
 def rerank(state: State) -> State:
     hits = state.get("hits", [])
     # Снимок «до реранка» — для отладки в UI
@@ -212,7 +216,7 @@ def rerank(state: State) -> State:
     return state
 
 @timed("build_context")
-@observe(name="build_context", capture_input=False, capture_output=False)
+# @observe  # Disabled(name="build_context", capture_input=False, capture_output=False)
 def build_context(state: State) -> State:
     citations: List[Dict[str, Any]] = []
     texts: List[str] = []
@@ -234,7 +238,7 @@ def build_context(state: State) -> State:
 
 
 @timed("generate")
-@observe(name="generate", as_type="generation", capture_input=False, capture_output=False)
+# @observe  # Disabled(name="generate", as_type="generation", capture_input=False, capture_output=False)
 def generate(state: State) -> State:
     history = state.get("history") or []
     history = history[-6:]  # последние 3 пары user/assistant
@@ -305,10 +309,56 @@ graph.add_edge("generate", END)
 
 app = graph.compile()
 
+# Граф только для поиска (без генерации)
+search_graph = StateGraph(State)
+search_graph.add_node("embed_query", embed_query)
+search_graph.add_node("retrieve", retrieve)
+search_graph.add_node("rerank", rerank)
+search_graph.add_node("build_context", build_context)
+
+search_graph.set_entry_point("embed_query")
+search_graph.add_edge("embed_query", "retrieve")
+search_graph.add_edge("retrieve", "rerank")
+search_graph.add_edge("rerank", "build_context")
+search_graph.add_edge("build_context", END)
+
+search_app = search_graph.compile()
+
 
 @api.get("/health")
 def health() -> Dict[str, str]:
     return {"status": "ok"}
+
+
+@api.post("/search")
+def search(req: AskRequest) -> Dict[str, Any]:
+    """Только поиск без генерации ответа"""
+    q = (req.q or "").strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="Query parameter 'q' is required")
+    cols = req.collections or [QDRANT_COLLECTION]
+
+    t0 = time.perf_counter()
+    try:
+        result = search_app.invoke({"query": q, "collections": cols, "history": []})
+    except Exception as e:
+        logger.exception(f"Search failed: {e}")
+        raise HTTPException(status_code=502, detail=f"Search error: {str(e)}")
+
+    search_ms = round((time.perf_counter() - t0) * 1000, 1)
+
+    return {
+        "query": q,
+        "citations": result.get("citations", []),
+        "citations_pre_rerank": result.get("citations_pre_rerank", []),
+        "timings": {
+            "embed_query": result.get("timings", {}).get("embed_query", 0),
+            "retrieve": result.get("timings", {}).get("retrieve", 0),
+            "rerank": result.get("timings", {}).get("rerank", 0),
+            "build_context": result.get("timings", {}).get("build_context", 0),
+            "search_total": search_ms,
+        }
+    }
 
 
 @api.on_event("shutdown")
@@ -319,7 +369,7 @@ def _flush_langfuse() -> None:
         pass
 
 @api.post("/ask")
-@observe(name="ask")
+# @observe  # Disabled(name="ask")
 def ask(req: AskRequest) -> Dict[str, Any]:
     q = (req.q or "").strip()
     if not q:
@@ -333,7 +383,14 @@ def ask(req: AskRequest) -> Dict[str, Any]:
     except Exception:
         pass
     t0 = time.perf_counter()
-    result = app.invoke({"query": q, "collections": cols, "history": req.history or []})
+    try:
+        result = app.invoke({"query": q, "collections": cols, "history": req.history or []})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Graph execution failed: {e}")
+        raise HTTPException(status_code=502, detail=f"Graph error: {str(e)}")
+
     total_ms = round((time.perf_counter() - t0) * 1000, 1)
     timings = result.get("timings", {}) or {}
     timings["total"] = total_ms
