@@ -50,6 +50,7 @@ class AskRequest(BaseModel):
     q: str
     collections: List[str] | None = None
     history: List[Dict[str, str]] | None = None  # [{"role":"user|assistant","content":"..."}]
+    citations: List[Dict[str, Any]] | None = None  # если переданы — пропускаем поиск
 
 
 class ScoreRequest(BaseModel):
@@ -388,7 +389,21 @@ def ask(req: AskRequest) -> Dict[str, Any]:
         pass
     t0 = time.perf_counter()
     try:
-        result = app.invoke({"query": q, "collections": cols, "history": req.history or []})
+        if req.citations:
+            # Готовые citations переданы — пропускаем embed/retrieve/rerank,
+            # сразу строим контекст и генерируем ответ
+            context = "\n\n---\n\n".join((c.get("text") or "").strip() for c in req.citations if c.get("text"))
+            state: State = {
+                "query": q,
+                "history": req.history or [],
+                "context": context,
+                "citations": req.citations,
+                "timings": {},
+            }
+            state = generate(state)
+            result = state
+        else:
+            result = app.invoke({"query": q, "collections": cols, "history": req.history or []})
     except HTTPException:
         raise
     except Exception as e:
@@ -396,7 +411,7 @@ def ask(req: AskRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=502, detail=f"Graph error: {str(e)}")
 
     total_ms = round((time.perf_counter() - t0) * 1000, 1)
-    logger.info(f"━━━ /ask DONE: {total_ms}ms, answer={len(result.get('answer', ''))} chars ━━━")
+    logger.info(f"━━━ /ask DONE: {total_ms}ms, answer={len(result.get('answer', ''))} chars, reused_citations={bool(req.citations)} ━━━")
     timings = result.get("timings", {}) or {}
     timings["total"] = total_ms
     try:

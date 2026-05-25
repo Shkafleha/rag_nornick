@@ -85,22 +85,27 @@ if prompt:
                 for c in citations:
                     _render_chunk(c)
 
-        # Этап 2: генерация ответа
+        # Этап 2: генерация ответа (передаём готовые citations — без повторного поиска)
         answer = ""
-        timings = {}
+        timings = dict(search_timings)
         trace_id = None
         with st.spinner("🤖 Генерирую ответ…"):
             try:
                 r = requests.post(
                     f"{RAG_API_URL}/ask",
-                    json={"q": prompt, "collections": selected, "history": history},
+                    json={
+                        "q": prompt,
+                        "collections": selected,
+                        "history": history,
+                        "citations": citations,
+                    },
                     timeout=600,
                 )
                 r.raise_for_status()
                 data = r.json()
                 answer = data.get("answer", "")
-                citations = data.get("citations", citations)
-                timings = data.get("timings", {})
+                # объединяем тайминги: поиск из /search + генерация из /ask
+                timings.update(data.get("timings", {}))
                 trace_id = data.get("trace_id")
                 logger.info(f"✓ /ask: {len(answer)} символов")
             except Exception as e:
