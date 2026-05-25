@@ -78,7 +78,6 @@ def timed(name: str):
 @timed("embed_query")
 # @observe  # Disabled(name="embed_query", capture_input=False, capture_output=False)
 def embed_query(state: State) -> State:
-    logger.info(f"Embedding query: {state.get('query', '')[:50]}...")
     try:
         langfuse_context.update_current_observation(input={"query": state.get("query", "")})
     except Exception:
@@ -90,18 +89,14 @@ def embed_query(state: State) -> State:
             timeout=60,
         )
         r.raise_for_status()
-        logger.info(f"Embedding done, status {r.status_code}")
     except Exception as e:
-        logger.error(f"Embedding failed: {e}")
         raise HTTPException(status_code=502, detail=f"Embeddings failed: {e}")
 
     emb = (r.json().get("embeddings") or [None])[0]
     if not isinstance(emb, list) or not emb:
-        logger.error("Embeddings response missing 'embeddings'")
         raise HTTPException(status_code=502, detail="Embeddings response missing 'embeddings'")
 
     state["q_embedding"] = emb
-    logger.info(f"Query embedding created: {len(emb)} dimensions")
     return state
 
 
@@ -109,12 +104,10 @@ def embed_query(state: State) -> State:
 # @observe  # Disabled(name="retrieve", capture_input=False, capture_output=False)
 def retrieve(state: State) -> State:
     collections = state.get("collections") or [QDRANT_COLLECTION]
-    logger.info(f"Retrieving from {len(collections)} collections: {collections}")
     all_hits = []
 
     for col in collections:
         try:
-            logger.info(f"  Searching in collection: {col}")
             r = requests.post(
                 f"{QDRANT_URL}/collections/{col}/points/search",
                 json={"vector": state["q_embedding"], "limit": RETRIEVE_TOP_K, "with_payload": True},
@@ -122,18 +115,14 @@ def retrieve(state: State) -> State:
             )
             r.raise_for_status()
             hits = r.json().get("result", [])
-            logger.info(f"  Found {len(hits)} hits in {col}")
             for h in hits:
                 h["_collection"] = col
             all_hits.extend(hits)
         except Exception as e:
-            logger.error(f"Qdrant search failed in {col}: {e}")
             raise HTTPException(status_code=502, detail=f"Qdrant search failed ({col}): {e}")
 
-    # Сортируем по score и берём RETRIEVE_TOP_K лучших — реранкер потом сократит
     all_hits.sort(key=lambda h: h.get("score", 0), reverse=True)
     state["hits"] = all_hits[:RETRIEVE_TOP_K]
-    logger.info(f"Retrieve done: {len(state['hits'])} hits after sorting")
     try:
         langfuse_context.update_current_observation(
             input={"collections": collections, "limit": RETRIEVE_TOP_K},
@@ -158,12 +147,10 @@ def retrieve(state: State) -> State:
 
 def _hit_to_citation(h: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not isinstance(h, dict):
-        logger.debug(f"_hit_to_citation: not a dict: {type(h)}")
         return None
     payload = h.get("payload") or {}
     t = (payload.get("text") or "").strip()
     if not t:
-        logger.debug(f"_hit_to_citation: no text in payload. Keys: {list(payload.keys())}")
         return None
     return {
         "text": t,
@@ -183,42 +170,29 @@ def _hit_to_citation(h: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 # @observe  # Disabled(name="rerank", capture_input=False, capture_output=False)
 def rerank(state: State) -> State:
     hits = state.get("hits", [])
-    # Снимок «до реранка» — для отладки в UI
     state["citations_pre_rerank"] = [c for c in (_hit_to_citation(h) for h in hits) if c]
     if not hits:
-        logger.info(f"No hits to rerank, returning empty")
         return state
     docs = [(h.get("payload") or {}).get("text", "") for h in hits]
-    logger.info(f"Sending {len(docs)} docs to reranker")
     try:
         r = requests.post(
             f"{RERANKER_URL}/rerank",
             json={"query": state["query"], "docs": docs, "top_k": RERANKER_TOP_K},
             timeout=60,
         )
-        logger.info(f"Reranker response: {r.status_code}, size: {len(r.text)} bytes")
         r.raise_for_status()
-        resp_json = r.json()
-        logger.info(f"Reranker JSON: {resp_json}")
-        results = resp_json.get("results", [])
+        results = r.json().get("results", [])
     except Exception as e:
-        logger.error(f"Rerank request failed: {type(e).__name__}: {e}")
         raise HTTPException(status_code=502, detail=f"Rerank failed: {e}")
 
-    logger.info(f"Processing {len(results)} reranked results")
     reranked = []
-    for i, item in enumerate(results):
-        try:
-            idx = item.get("index")
-            if idx is None:
-                logger.warning(f"Result {i} has no 'index' field: {item}")
-                continue
-            h = hits[idx]
-            h["rerank_score"] = item.get("score", 0)
-            reranked.append(h)
-        except (KeyError, IndexError) as e:
-            logger.warning(f"Error processing result {i}: {e}")
-    logger.info(f"Reranked hits count: {len(reranked)}")
+    for item in results:
+        idx = item.get("index")
+        if idx is None:
+            continue
+        h = hits[idx]
+        h["rerank_score"] = item.get("score", 0)
+        reranked.append(h)
     state["hits"] = reranked
     try:
         langfuse_context.update_current_observation(
@@ -245,29 +219,22 @@ def rerank(state: State) -> State:
 @timed("build_context")
 # @observe  # Disabled(name="build_context", capture_input=False, capture_output=False)
 def build_context(state: State) -> State:
-    logger.info(f"build_context: processing {len(state.get('hits', []))} hits")
     citations: List[Dict[str, Any]] = []
     texts: List[str] = []
-    for i, h in enumerate(state.get("hits", [])):
+    for h in state.get("hits", []):
         c = _hit_to_citation(h)
         if c:
             citations.append(c)
             texts.append(c["text"])
-            logger.debug(f"  Hit {i}: OK - {len(c['text'])} chars")
-        else:
-            logger.warning(f"  Hit {i}: SKIPPED - no valid text. Keys in hit: {list(h.keys())}")
 
-    logger.info(f"build_context: created {len(citations)} citations from {len(state.get('hits', []))} hits")
     state["context"] = "\n\n---\n\n".join(texts)
     state["citations"] = citations
-    logger.info(f"build_context: context size {len(state['context'])} chars")
     try:
         langfuse_context.update_current_observation(
             output={"n_chunks": len(citations), "context_chars": len(state["context"])},
         )
     except Exception:
         pass
-    logger.info(f"build_context: done")
     return state
 
 
