@@ -11,12 +11,11 @@ from langgraph.graph import END, StateGraph
 
 from pydantic import BaseModel
 from langfuse import Langfuse
-from langfuse.decorators import observe, langfuse_context
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-# langfuse_client = Langfuse()  # Disabled for now
+langfuse_client = Langfuse()
 
 api = FastAPI()
 
@@ -133,7 +132,7 @@ def retrieve(state: State) -> State:
                     {
                         "chunk_id": (h.get("payload") or {}).get("chunk_id", h.get("id")),
                         "score": round(h.get("score", 0), 4),
-                        "header": (h.get("payload") or {}).get("header_breadcrumb", ""),
+                        "section_breadcrumb": (h.get("payload") or {}).get("section_breadcrumb", ""),
                         "page": (h.get("payload") or {}).get("page"),
                         "text": ((h.get("payload") or {}).get("text") or "")[:500],
                     }
@@ -155,9 +154,10 @@ def _hit_to_citation(h: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
     return {
         "text": t,
-        "header": payload.get("header", ""),
-        "header_breadcrumb": payload.get("header_breadcrumb", ""),
+        "section_title": payload.get("section_title", ""),
+        "section_breadcrumb": payload.get("section_breadcrumb", ""),
         "page": payload.get("page"),
+        "page_range": payload.get("page_range", ""),
         "type": payload.get("type", ""),
         "source": payload.get("source", "unknown"),
         "chunk_id": payload.get("chunk_id", h.get("id")),
@@ -205,7 +205,7 @@ def rerank(state: State) -> State:
                         "chunk_id": (h.get("payload") or {}).get("chunk_id", h.get("id")),
                         "score": round(h.get("score", 0), 4),
                         "rerank_score": round(h.get("rerank_score", 0), 4),
-                        "header": (h.get("payload") or {}).get("header_breadcrumb", ""),
+                        "section_breadcrumb": (h.get("payload") or {}).get("section_breadcrumb", ""),
                         "page": (h.get("payload") or {}).get("page"),
                         "text": ((h.get("payload") or {}).get("text") or "")[:500],
                     }
@@ -272,7 +272,7 @@ def generate(state: State) -> State:
                 "model": LLM_MODEL,
                 "prompt": prompt,
                 "stream": False,
-                "options": {"num_ctx": 8192, "temperature": 0.2},
+                "options": {"num_ctx": 4096, "temperature": 0.1},
             },
             timeout=600,
         )
@@ -340,58 +340,75 @@ def search(req: AskRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail="Query parameter 'q' is required")
     cols = req.collections or [QDRANT_COLLECTION]
 
+    try:
+        trace = langfuse_client.trace(
+            name="search",
+            input={"query": q, "collections": cols},
+            metadata={"embed_model": EMBED_MODEL},
+        )
+        logger.info(f"🔵 LF trace created: id={trace.id} name=search")
+    except Exception as e:
+        logger.error(f"❌ LF trace creation failed: {type(e).__name__}: {e}")
+        trace = None
     logger.info(f"━━━ /search START: {q[:50]}... ━━━")
     t0 = time.perf_counter()
     try:
         result = search_app.invoke({"query": q, "collections": cols, "history": []})
     except Exception as e:
         logger.exception(f"Search failed: {e}")
+        trace.update(output={"error": str(e)})
+        langfuse_client.flush()
         raise HTTPException(status_code=502, detail=f"Search error: {str(e)}")
 
     search_ms = round((time.perf_counter() - t0) * 1000, 1)
+    timings = {
+        "embed_query": result.get("timings", {}).get("embed_query", 0),
+        "retrieve": result.get("timings", {}).get("retrieve", 0),
+        "rerank": result.get("timings", {}).get("rerank", 0),
+        "build_context": result.get("timings", {}).get("build_context", 0),
+        "search_total": search_ms,
+    }
+    if trace:
+        try:
+            trace.update(output={"n_citations": len(result.get("citations", [])), "timings": timings})
+            langfuse_client.flush()
+            logger.info(f"🔵 LF trace flushed: id={trace.id}")
+        except Exception as e:
+            logger.error(f"❌ LF flush failed: {type(e).__name__}: {e}")
     logger.info(f"━━━ /search DONE: {search_ms}ms, {len(result.get('citations', []))} citations ━━━")
 
     return {
         "query": q,
         "citations": result.get("citations", []),
         "citations_pre_rerank": result.get("citations_pre_rerank", []),
-        "timings": {
-            "embed_query": result.get("timings", {}).get("embed_query", 0),
-            "retrieve": result.get("timings", {}).get("retrieve", 0),
-            "rerank": result.get("timings", {}).get("rerank", 0),
-            "build_context": result.get("timings", {}).get("build_context", 0),
-            "search_total": search_ms,
-        }
+        "timings": timings,
     }
 
 
 @api.on_event("shutdown")
 def _flush_langfuse() -> None:
     try:
-        langfuse_context.flush()
+        langfuse_client.flush()
     except Exception:
         pass
 
+
 @api.post("/ask")
-# @observe  # Disabled(name="ask")
 def ask(req: AskRequest) -> Dict[str, Any]:
     q = (req.q or "").strip()
     if not q:
         raise HTTPException(status_code=400, detail="Query parameter 'q' is required")
     cols = req.collections or [QDRANT_COLLECTION]
+
+    trace = langfuse_client.trace(
+        name="ask",
+        input={"query": q, "collections": cols, "history_len": len(req.history or [])},
+        metadata={"llm_model": LLM_MODEL, "embed_model": EMBED_MODEL},
+    )
     logger.info(f"━━━ /ask START: {q[:50]}... (history={len(req.history or [])} msgs) ━━━")
-    try:
-        langfuse_context.update_current_trace(
-            input={"query": q, "collections": cols, "history_len": len(req.history or [])},
-            metadata={"llm_model": LLM_MODEL, "embed_model": EMBED_MODEL},
-        )
-    except Exception:
-        pass
     t0 = time.perf_counter()
     try:
         if req.citations:
-            # Готовые citations переданы — пропускаем embed/retrieve/rerank,
-            # сразу строим контекст и генерируем ответ
             context = "\n\n---\n\n".join((c.get("text") or "").strip() for c in req.citations if c.get("text"))
             state: State = {
                 "query": q,
@@ -405,28 +422,24 @@ def ask(req: AskRequest) -> Dict[str, Any]:
         else:
             result = app.invoke({"query": q, "collections": cols, "history": req.history or []})
     except HTTPException:
+        langfuse_client.flush()
         raise
     except Exception as e:
         logger.exception(f"Graph execution failed: {e}")
+        trace.update(output={"error": str(e)})
+        langfuse_client.flush()
         raise HTTPException(status_code=502, detail=f"Graph error: {str(e)}")
 
     total_ms = round((time.perf_counter() - t0) * 1000, 1)
     logger.info(f"━━━ /ask DONE: {total_ms}ms, answer={len(result.get('answer', ''))} chars, reused_citations={bool(req.citations)} ━━━")
     timings = result.get("timings", {}) or {}
     timings["total"] = total_ms
-    try:
-        langfuse_context.update_current_trace(
-            output={"answer": result.get("answer", ""), "timings": timings},
-        )
-    except Exception:
-        pass
-    trace_id = None
-    try:
-        trace_id = langfuse_context.get_current_trace_id()
-    except Exception:
-        pass
+    trace.update(
+        output={"answer": result.get("answer", ""), "timings": timings},
+    )
+    langfuse_client.flush()
     return {
-        "trace_id": trace_id,
+        "trace_id": trace.id,
         "answer": result.get("answer", ""),
         "citations": result.get("citations", []),
         "citations_pre_rerank": result.get("citations_pre_rerank", []),

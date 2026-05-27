@@ -27,29 +27,51 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 
 def _render_chunk(c):
-    header = c.get("header_breadcrumb") or c.get("header") or (c["text"].split("\n", 1)[0] if c.get("text") else "")
-    st.markdown(f"**{header}**")
-    meta = [f"chunk {c['chunk_id']}", f"score {c['score']}"]
+    header = c.get("section_breadcrumb") or c.get("section_title") or (c["text"].split("\n", 1)[0] if c.get("text") else "—")
+    meta = [f"score {c['score']}"]
     if c.get("rerank_score"):
         meta.append(f"rerank {c['rerank_score']}")
-    if c.get("page"):
-        meta.append(f"стр. {c['page']}")
-    st.markdown(" · ".join(meta))
-    st.caption(c["text"])
-    st.divider()
+    page = c.get("page_range") or c.get("page")
+    if page:
+        meta.append(f"стр. {page}")
+    label = f"{header}  ·  {' · '.join(meta)}"
+    with st.expander(label, expanded=False):
+        st.caption(c["text"])
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-EXAMPLES = ["Расскажи как работает карбонатный передел"]
-cols = st.columns(len(EXAMPLES))
-preset = None
-for i, q in enumerate(EXAMPLES):
-    if cols[i].button(q, key=f"ex_{i}"):
-        preset = q
+# Load example questions from golden dataset
+import json
+from pathlib import Path
 
-prompt = preset or st.chat_input("Вопрос…")
+ALL_EXAMPLES = []
+golden_dataset_path = Path("data/04_golden_dataset/qa_pairs_v2_podpunkti_golden.jsonl")
+if golden_dataset_path.exists():
+    try:
+        with open(golden_dataset_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    qa = json.loads(line)
+                    q = qa.get("question", "")
+                    if q and q not in ALL_EXAMPLES:
+                        ALL_EXAMPLES.append(q)
+    except Exception as e:
+        logger.warning(f"Could not load examples from golden dataset: {e}")
+
+preset = None
+selected_example = st.selectbox(
+    "Примеры вопросов",
+    options=[""] + ALL_EXAMPLES,
+    format_func=lambda x: "— выберите вопрос —" if x == "" else x,
+    label_visibility="collapsed",
+)
+if selected_example:
+    preset = selected_example
+
+chat_input = st.chat_input("Вопрос…")
+prompt = preset or chat_input
 if prompt:
     logger.info(f"🔵 Новый вопрос: {prompt[:50]}...")
 
