@@ -38,6 +38,25 @@ def _render_chunk(c):
     with st.expander(label, expanded=False):
         st.caption(c["text"])
 
+
+def _send_score(trace_id: str):
+    """Callback для st.feedback — шлёт оценку в Langfuse через /score."""
+    fb_key = f"fb_{trace_id}"
+    val = st.session_state.get(fb_key)
+    if val is None:
+        return
+    score_value = 1.0 if val == 1 else 0.0
+    try:
+        requests.post(
+            f"{RAG_API_URL}/score",
+            json={"trace_id": trace_id, "value": score_value},
+            timeout=10,
+        ).raise_for_status()
+        st.session_state[f"scored_{trace_id}"] = score_value
+        logger.info(f"✓ score sent: {score_value} for {trace_id}")
+    except Exception as e:
+        logger.error(f"❌ /score failed: {type(e).__name__}: {e}")
+
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
@@ -145,6 +164,8 @@ if prompt:
                      for k in ["embed_query", "retrieve", "rerank", "build_context", "generate", "total"]
                      if k in timings]
             st.caption(" · ".join(parts))
+        if trace_id and not answer.startswith("❌"):
+            st.feedback("thumbs", key=f"fb_{trace_id}", on_change=_send_score, args=(trace_id,))
 
     st.session_state.messages.append({
         "role": "assistant",
