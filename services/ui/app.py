@@ -65,7 +65,13 @@ for msg in st.session_state.messages:
 import json
 from pathlib import Path
 
-ALL_EXAMPLES = []
+DB_EXAMPLES = [
+    "Какое содержание ni в каролите 2141_3052_28?",
+    "Покажи данные по тегу 2282_3312_317 (h2so4 в растворе пастка №502)",
+    "Динамика cu в цементаторах i группы 2171_2380_29 за последний месяц",
+]
+
+ALL_EXAMPLES = list(DB_EXAMPLES)
 golden_dataset_path = Path("data/04_golden_dataset/qa_pairs_v2_podpunkti_golden.jsonl")
 if golden_dataset_path.exists():
     try:

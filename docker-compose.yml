@@ -1,3 +1,11 @@
+# Ограничение размера логов контейнеров: json-file ротируется по 10 МБ × 3 файла,
+# иначе болтливые сервисы (Ollama) бесконтрольно растят логи на диске.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
 
   # ── PostgreSQL (shared: langsmith + text-to-sql данные) ────────────────────
@@ -21,7 +29,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── Ollama (LLM + Embeddings) ──────────────────────────────────────────────
+  # ── Ollama GPU (LLM только) ────────────────────────────────────────────────
   ollama:
     image: ollama/ollama:latest
     container_name: ollama_local
@@ -31,9 +39,17 @@ services:
       - ollama_data:/root/.ollama
     environment:
       - OLLAMA_HOST=0.0.0.0:11434
+      - OLLAMA_FLASH_ATTENTION=1
+      - OLLAMA_KV_CACHE_TYPE=q8_0
+      - OLLAMA_MAX_LOADED_MODELS=1
+      - OLLAMA_NUM_PARALLEL=1
+      - OLLAMA_DEBUG=0
     restart: unless-stopped
+    logging: *default-logging
     networks:
       - ollama_network
+    healthcheck:
+      disable: true
     deploy:
       resources:
         reservations:
@@ -41,6 +57,26 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+
+  # ── Ollama CPU (Embeddings только) ─────────────────────────────────────────
+  ollama_cpu:
+    image: ollama/ollama:latest
+    container_name: ollama_cpu
+    ports:
+      - "11435:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+      - OLLAMA_MAX_LOADED_MODELS=1
+      - CUDA_VISIBLE_DEVICES=""
+      - OLLAMA_DEBUG=0
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - ollama_network
+    healthcheck:
+      disable: true
 
   # ── Qdrant ─────────────────────────────────────────────────────────────────
   qdrant:
@@ -65,9 +101,9 @@ services:
       - EMBED_MODEL=bge-m3:latest
       - LLM_MODEL=qwen3:8b
       - QDRANT_COLLECTION=CEN1_ТИ_3-48200234-05.1-12-2020_Очистка_электролита_от_примесей
-      - POSTGRES_URI=postgresql://postgres:postgres@postgres:5432/llm_platform
+      - MCP_DB_URL=http://mcp_db:8090/mcp
       - OLLAMA_URL=http://ollama:11434
-      - OLLAMA_EMBED_URL=http://ollama:11434
+      - OLLAMA_EMBED_URL=http://ollama_cpu:11434
       - RERANKER_URL=${RERANKER_URL:-http://reranker:8080}
       - RERANKER_TOP_K=5
       - RETRIEVE_TOP_K=10
@@ -75,17 +111,20 @@ services:
       - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
       - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
     depends_on:
-      postgres:
-        condition: service_healthy
       qdrant:
         condition: service_started
       reranker:
         condition: service_started
       ollama:
         condition: service_started
+      ollama_cpu:
+        condition: service_started
+      mcp_db:
+        condition: service_started
     volumes:
       - ./data/processed:/data:ro
-      - hf_cache:/root/.cache/huggingface  
+      - hf_cache:/root/.cache/huggingface
+      - ./services/rag_api:/app
     restart: unless-stopped
     networks:
       - ollama_network
@@ -233,6 +272,20 @@ services:
     networks:
       - ollama_network
 
+  # ── MCP DB server ──────────────────────────────────────────────────────────
+  mcp_db:
+    build: ./services/mcp_db
+    container_name: mcp_db
+    ports:
+      - "8090:8090"
+    environment:
+      - PARQUET_PATH=/data/cen1_lab_last_year.parquet
+    volumes:
+      - ./data:/data:ro
+    restart: unless-stopped
+    networks:
+      - ollama_network
+
   # ── UI ─────────────────────────────────────────────────────────────────────
   ui:
     build: ./services/ui
@@ -243,6 +296,9 @@ services:
       - RAG_API_URL=http://rag_api:8000
     depends_on:
       - rag_api
+    volumes:
+      - ./data:/app/data:ro
+      - ./services/ui:/app
     restart: unless-stopped
     networks:
       - ollama_network

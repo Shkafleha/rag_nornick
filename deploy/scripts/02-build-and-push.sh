@@ -18,7 +18,6 @@ build_push ui            "${ROOT}/services/ui"             "${ROOT}/services/ui/
 build_push reranker      "${ROOT}/services/reranker"       "${ROOT}/services/reranker/Dockerfile"
 build_push indexer_text  "${ROOT}/services/indexer"        "${ROOT}/services/indexer/text_pdf/Dockerfile"
 build_push indexer_image "${ROOT}/services/indexer"        "${ROOT}/services/indexer/image_pdf/Dockerfile"
-build_push notebook      "${ROOT}"                         "${ROOT}/services/notebook/Dockerfile"
 
 # embeddings: services/embeddings/ отсутствует в репо — пропускаем.
 # Если соберёшь — раскомментируй:

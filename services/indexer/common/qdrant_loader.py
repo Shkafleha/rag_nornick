@@ -8,7 +8,9 @@ import requests
 from .schema import Chunk
 
 QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
-COLLECTION = os.getenv("COLLECTION", "docs_v1")
+COLLECTION = os.getenv("COLLECTION")
+if not COLLECTION:
+    raise ValueError("COLLECTION environment variable is required")
 
 
 def ensure_collection(vector_size: int, recreate: bool = False) -> None:

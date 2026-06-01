@@ -1,6 +1,6 @@
 # shared/
 
-Код, общий между `services/` (prod) и `research/`. Сюда переезжают:
+Код, общий между сервисами `services/` (prod). Сюда переезжают:
 - клиенты Qdrant / Ollama / reranker
 - схемы данных (Chunk, Hit, Citation)
 - утилиты для загрузки/сохранения артефактов в `data/experiments/`

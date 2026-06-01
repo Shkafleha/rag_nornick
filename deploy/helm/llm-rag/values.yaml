@@ -11,7 +11,6 @@ global:
 # Включаемые сервисы (для постепенного раската)
 features:
   embeddings: false        # services/embeddings/ отсутствует, включи когда соберёшь
-  notebook: false          # dev-инструмент, в проде обычно не нужен
   langfuse: true
   reranker: true
   ui: true
@@ -72,10 +71,6 @@ ui:
   image: llm/ui:latest
   port: 8501
 
-notebook:
-  image: llm/notebook:latest
-  port: 8888
-
 langfuse:
   workerImage: langfuse/langfuse-worker:3
   webImage: langfuse/langfuse:3
@@ -120,7 +115,6 @@ ingress:
     ui: ui.llm.local
     api: api.llm.local
     langfuse: langfuse.llm.local
-    notebook: nb.llm.local
 
 # Внешний доступ (LoadBalancer от k3s klipper-lb привяжет к node IP)
 externalAccess:

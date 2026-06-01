@@ -31,12 +31,4 @@ spec:
             pathType: Prefix
             backend: { service: { name: langfuse-web, port: { number: 3000 } } }
     {{- end }}
-    {{- if .Values.features.notebook }}
-    - host: {{ .Values.ingress.hosts.notebook }}
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend: { service: { name: notebook, port: { number: 8888 } } }
-    {{- end }}
 {{- end }}

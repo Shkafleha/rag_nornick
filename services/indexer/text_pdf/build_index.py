@@ -9,7 +9,7 @@
 
 Env:
     RAW_DIR          default /data/00_raw
-    COLLECTION       default docs_v1
+    COLLECTION       REQUIRED
     QDRANT_URL       default http://qdrant:6333
     OLLAMA_EMBED_URL default http://ollama_cpu:11434
     EMBED_MODEL      default bge-m3:latest

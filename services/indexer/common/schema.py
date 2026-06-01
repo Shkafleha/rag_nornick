@@ -6,7 +6,7 @@ from typing import Literal
 
 
 SourceType = Literal["text", "ocr"]
-ChunkType = Literal["text", "table"]
+ChunkType = Literal["text", "table", "image"]
 
 
 @dataclass
@@ -15,7 +15,8 @@ class Page:
     source: str                 # имя файла, напр. "instr.pdf"
     page: int                   # 1-based
     text: str                   # извлечённый текст
-    tables: list[str] = field(default_factory=list)  # таблицы в markdown
+    tables: list[str] = field(default_factory=list)    # таблицы в markdown
+    images: list[dict] = field(default_factory=list)   # {"description": str, ...}
     source_type: SourceType = "text"
 
 
