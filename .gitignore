@@ -48,8 +48,5 @@ logs/
 # Claude Code local settings
 .claude/
 
-# Большие колоночные данные
-*.parquet
-
 # Временные скрипты / черновики
 scripts/temp/
